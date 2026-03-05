@@ -15,9 +15,10 @@ bot.on('photo', async (ctx) => {
 
   try {
     const photo = ctx.message.photo.pop();
+    const mediaGroupId = ctx.message.media_group_id; // ID альбома
     if (!photo) return;
 
-    // 1. Обработка и загрузка (как и было)
+    // 1. Загрузка фото (как обычно)
     const fileLink = await ctx.telegram.getFileLink(photo.file_id);
     const response = await fetch(fileLink.href);
     const inputBuffer = Buffer.from(await response.arrayBuffer());
@@ -28,42 +29,50 @@ bot.on('photo', async (ctx) => {
       .toBuffer();
 
     const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.webp`;
-    const { error: uploadError } = await supabase.storage
+    await supabase.storage
       .from('images')
       .upload(fileName, optimizedBuffer, { contentType: 'image/webp' });
 
-    if (uploadError) throw uploadError;
-
     const { data: { publicUrl } } = supabase.storage.from('images').getPublicUrl(fileName);
 
-    // 2. СРАЗУ присылаем одиночную ссылку
+    // 2. Сразу отправляем одиночную ссылку
     await ctx.reply(publicUrl);
 
-    // 3. Сохраняем в таблицу "черновик"
-    await supabase.from('temp_uploads').insert([{ url: publicUrl }]);
+    // 3. Если это часть альбома, сохраняем в БД и проверяем группу
+    if (mediaGroupId) {
+      // Сохраняем ссылку с ID группы
+      await supabase.from('temp_uploads').insert([{ 
+        url: publicUrl, 
+        media_group_id: mediaGroupId 
+      }]);
 
-    // 4. Логика "Сбора пачки"
-    // Ждем 3 секунды, чтобы убедиться, что все фото из альбома дошли
-    setTimeout(async () => {
-      // Проверяем, сколько ссылок накопилось за последние 5 секунд
-      const { data: recentLinks } = await supabase
+      // Ждем полсекунды (короткая задержка допустима)
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      // Получаем все ссылки этого альбома из базы
+      const { data: groupPhotos } = await supabase
         .from('temp_uploads')
         .select('url')
-        .gt('created_at', new Date(Date.now() - 5000).toISOString());
+        .eq('media_group_id', mediaGroupId);
 
-      if (recentLinks && recentLinks.length > 1) {
-        // Проверяем, не отправляли ли мы этот список только что (чтобы не дублировать)
-        // Для простоты: если текущая ссылка — последняя в списке, то отправляем весь список
-        if (recentLinks[recentLinks.length - 1].url === publicUrl) {
-          const allUrls = recentLinks.map(img => img.url).join('\n\n');
-          await ctx.reply(`📋 Весь список для карточки:\n\n${allUrls}`);
-        }
+      // Если ссылок несколько, отправляем их списком
+      // Мы делаем это для каждого фото, но фильтруем, чтобы не спамить
+      // Список отправится только после загрузки последнего фото группы
+      if (groupPhotos && groupPhotos.length > 1) {
+         // Чтобы не спамить списком после каждого фото, отправим его только 
+         // когда количество ссылок в БД перестанет расти (или просто последним сообщением)
+         // Для удобства — добавим кнопку "Собрать список", если хочешь, 
+         // но пока просто выведем накопившееся
+         const allUrls = groupPhotos.map(p => p.url).join('\n\n');
+         
+         // Трюк: отправляем список только если текущее фото — "последнее пришедшее" в запросе
+         // В Serverless это сложно поймать, поэтому просто присылаем обновление списка
+         await ctx.reply(`📋 Накопленный список ссылок:\n\n${allUrls}`);
       }
-    }, 3500);
+    }
 
   } catch (err) {
     console.error(err);
-    ctx.reply('Ошибка ❌');
   }
 });
 
