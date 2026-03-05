@@ -15,10 +15,10 @@ bot.on('photo', async (ctx) => {
 
   try {
     const photo = ctx.message.photo.pop();
-    const mediaGroupId = ctx.message.media_group_id; // ID альбома
+    const mediaGroupId = ctx.message.media_group_id;
     if (!photo) return;
 
-    // 1. Загрузка фото (как обычно)
+    // 1. Загрузка и оптимизация
     const fileLink = await ctx.telegram.getFileLink(photo.file_id);
     const response = await fetch(fileLink.href);
     const inputBuffer = Buffer.from(await response.arrayBuffer());
@@ -35,44 +35,34 @@ bot.on('photo', async (ctx) => {
 
     const { data: { publicUrl } } = supabase.storage.from('images').getPublicUrl(fileName);
 
-    // 2. Сразу отправляем одиночную ссылку
+    // 2. Отправляем одиночную ссылку (для контроля)
     await ctx.reply(publicUrl);
 
-    // 3. Если это часть альбома, сохраняем в БД и проверяем группу
+    // 3. Работа с группой фото
     if (mediaGroupId) {
-      // Сохраняем ссылку с ID группы
       await supabase.from('temp_uploads').insert([{ 
         url: publicUrl, 
         media_group_id: mediaGroupId 
       }]);
 
-      // Ждем полсекунды (короткая задержка допустима)
-      await new Promise(resolve => setTimeout(resolve, 800));
+      // Небольшая пауза, чтобы база успела обновиться
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
-      // Получаем все ссылки этого альбома из базы
       const { data: groupPhotos } = await supabase
         .from('temp_uploads')
         .select('url')
         .eq('media_group_id', mediaGroupId);
 
-      // Если ссылок несколько, отправляем их списком
-      // Мы делаем это для каждого фото, но фильтруем, чтобы не спамить
-      // Список отправится только после загрузки последнего фото группы
       if (groupPhotos && groupPhotos.length > 1) {
-         // Чтобы не спамить списком после каждого фото, отправим его только 
-         // когда количество ссылок в БД перестанет расти (или просто последним сообщением)
-         // Для удобства — добавим кнопку "Собрать список", если хочешь, 
-         // но пока просто выведем накопившееся
-         const allUrls = groupPhotos.map(p => p.url).join('\n\n');
+        // ФОРМАТ: ссылка пробел запятая пробел ссылка
+        const allUrls = groupPhotos.map(p => p.url).join(' , ');
          
-         // Трюк: отправляем список только если текущее фото — "последнее пришедшее" в запросе
-         // В Serverless это сложно поймать, поэтому просто присылаем обновление списка
-         await ctx.reply(`📋 Накопленный список ссылок:\n\n${allUrls}`);
+        await ctx.reply(`📋 Готовый список для вставки:\n\n${allUrls}`);
       }
     }
 
   } catch (err) {
-    console.error(err);
+    console.error('Ошибка:', err);
   }
 });
 
